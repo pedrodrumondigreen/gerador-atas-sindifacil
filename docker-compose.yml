@@ -1,0 +1,42 @@
+version: "3.7"
+services:
+
+## --------------------------- SINDIFÁCIL --------------------------- ##
+
+  gerador_atas:
+    image: gerador-atas:latest
+    build: .
+
+    networks:
+      - PedroDrumondNet
+
+    environment:
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
+      - NODE_ENV=production
+
+    deploy:
+      mode: replicated
+      replicas: 1
+      placement:
+        constraints:
+          - node.role == manager
+      resources:
+        limits:
+          cpus: "1"
+          memory: 1024M
+      labels:
+        - traefik.enable=true
+        - traefik.http.routers.gerador_atas.rule=Host(`atas.condomineall.com`)
+        - traefik.http.routers.gerador_atas.entrypoints=websecure
+        - traefik.http.routers.gerador_atas.priority=1
+        - traefik.http.routers.gerador_atas.tls.certresolver=letsencryptresolver
+        - traefik.http.routers.gerador_atas.service=gerador_atas
+        - traefik.http.services.gerador_atas.loadbalancer.server.port=3000
+        - traefik.http.services.gerador_atas.loadbalancer.passHostHeader=true
+
+## --------------------------- SINDIFÁCIL --------------------------- ##
+
+networks:
+  PedroDrumondNet:
+    external: true
+    name: PedroDrumondNet
