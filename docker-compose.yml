@@ -10,6 +10,9 @@ services:
     networks:
       - PedroDrumondNet
 
+    ports:
+      - "3001:3000"
+
     environment:
       - OPENAI_API_KEY=${OPENAI_API_KEY}
       - NODE_ENV=production
@@ -22,8 +25,8 @@ services:
           - node.role == manager
       resources:
         limits:
-          cpus: "1"
-          memory: 1024M
+          cpus: "2"
+          memory: 4096M
       labels:
         - traefik.enable=true
         - traefik.http.routers.gerador_atas.rule=Host(`atas.condomineall.com`)

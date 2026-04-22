@@ -1,42 +1,41 @@
 import { NextRequest, NextResponse } from "next/server";
-import { writeFile, readFile, unlink, readdir, mkdir, rm } from "fs/promises";
+import { createWriteStream } from "fs";
+import { readFile, readdir, mkdir, rm } from "fs/promises";
 import { join } from "path";
 import { tmpdir } from "os";
 import { exec } from "child_process";
 import { promisify } from "util";
+import { Readable } from "node:stream";
+import Busboy from "busboy";
 import { transcreverAudio } from "@/lib/transcricao";
 
 const execAsync = promisify(exec);
 
-export const maxDuration = 300;
+export const runtime = "nodejs";
+export const maxDuration = 3600;
 
 export async function POST(request: NextRequest) {
+  const contentType = request.headers.get("content-type");
+  if (!contentType || !contentType.includes("multipart/form-data")) {
+    return NextResponse.json({ error: "Content-Type inválido" }, { status: 400 });
+  }
+
+  if (!request.body) {
+    return NextResponse.json({ error: "Requisição sem corpo" }, { status: 400 });
+  }
+
   const tmpDir = join(tmpdir(), `ata-${Date.now()}`);
+  await mkdir(tmpDir, { recursive: true });
 
   try {
-    await mkdir(tmpDir, { recursive: true });
+    const inputPath = await receiveFileToDisk(request.body, contentType, tmpDir);
 
-    const formData = await request.formData();
-    const file = formData.get("audio") as File | null;
-
-    if (!file) {
-      return NextResponse.json({ error: "Arquivo não encontrado" }, { status: 400 });
-    }
-
-    // Salva o arquivo enviado no disco temporário
-    const ext = file.name.split(".").pop()?.toLowerCase() ?? "mp4";
-    const inputPath = join(tmpDir, `input.${ext}`);
-    const buffer = Buffer.from(await file.arrayBuffer());
-    await writeFile(inputPath, buffer);
-
-    // Converte para MP3 mono 16kHz e divide em segmentos de 10 minutos
     const segPattern = join(tmpDir, "seg_%03d.mp3");
     await execAsync(
       `ffmpeg -i "${inputPath}" -vn -ac 1 -ar 16000 -ab 64k -f segment -segment_time 600 "${segPattern}"`,
-      { timeout: 300_000 } // 5 min máx para conversão
+      { timeout: 1_800_000, maxBuffer: 50 * 1024 * 1024 }
     );
 
-    // Lista os segmentos gerados
     const allFiles = await readdir(tmpDir);
     const segments = allFiles
       .filter((f) => f.startsWith("seg_") && f.endsWith(".mp3"))
@@ -46,7 +45,6 @@ export async function POST(request: NextRequest) {
       throw new Error("FFmpeg não gerou segmentos de áudio");
     }
 
-    // Transcreve cada segmento com Whisper
     const transcricoes: string[] = [];
     for (const seg of segments) {
       const segBuffer = await readFile(join(tmpDir, seg));
@@ -65,4 +63,59 @@ export async function POST(request: NextRequest) {
   } finally {
     await rm(tmpDir, { recursive: true, force: true }).catch(() => {});
   }
+}
+
+function receiveFileToDisk(
+  body: ReadableStream<Uint8Array>,
+  contentType: string,
+  tmpDir: string
+): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const bb = Busboy({ headers: { "content-type": contentType } });
+
+    let inputPath: string | null = null;
+    let pendingWrite: Promise<void> | null = null;
+    let fileHandled = false;
+
+    bb.on("file", (_fieldname, fileStream, info) => {
+      if (fileHandled) {
+        fileStream.resume();
+        return;
+      }
+      fileHandled = true;
+
+      const rawName = info.filename || "input.mp4";
+      const ext = (rawName.split(".").pop() ?? "mp4").toLowerCase();
+      inputPath = join(tmpDir, `input.${ext}`);
+
+      const writeStream = createWriteStream(inputPath);
+
+      pendingWrite = new Promise<void>((res, rej) => {
+        writeStream.on("finish", () => res());
+        writeStream.on("error", rej);
+        fileStream.on("error", rej);
+      });
+
+      fileStream.pipe(writeStream);
+    });
+
+    bb.on("error", reject);
+
+    bb.on("close", async () => {
+      if (!inputPath || !pendingWrite) {
+        reject(new Error("Arquivo não encontrado no upload"));
+        return;
+      }
+      try {
+        await pendingWrite;
+        resolve(inputPath);
+      } catch (err) {
+        reject(err);
+      }
+    });
+
+    const nodeReadable = Readable.fromWeb(body as unknown as Parameters<typeof Readable.fromWeb>[0]);
+    nodeReadable.on("error", reject);
+    nodeReadable.pipe(bb);
+  });
 }

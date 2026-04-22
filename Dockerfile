@@ -1,6 +1,5 @@
 FROM node:20-alpine
 
-# Instala FFmpeg
 RUN apk add --no-cache ffmpeg
 
 WORKDIR /app
@@ -13,4 +12,6 @@ RUN npm run build
 
 EXPOSE 3000
 
-CMD ["npm", "start"]
+ENV NODE_OPTIONS="--max-old-space-size=3072"
+
+CMD ["node", "server.js"]
