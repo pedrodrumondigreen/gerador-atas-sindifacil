@@ -24,13 +24,17 @@ export async function POST(request: NextRequest) {
     const conteudo = await extrairConteudoAta(transcricao, condominio, assembleia);
     const docxBuffer = await gerarAtaDocx(conteudo, condominio, assembleia);
 
-    const nomeArquivo = `Ata-${condominio.nomeEdificio.replace(/\s+/g, "-")}-${assembleia.data}.docx`;
+    const nomeBase = `Ata-${condominio.nomeEdificio.replace(/\s+/g, "-")}-${assembleia.data}.docx`;
+    const nomeAscii = nomeBase
+      .normalize("NFD")
+      .replace(/[^\x20-\x7e]/g, "")
+      .replace(/"/g, "");
 
     return new NextResponse(new Uint8Array(docxBuffer), {
       headers: {
         "Content-Type":
           "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-        "Content-Disposition": `attachment; filename="${nomeArquivo}"`,
+        "Content-Disposition": `attachment; filename="${nomeAscii}"; filename*=UTF-8''${encodeURIComponent(nomeBase)}`,
         "Content-Length": String(docxBuffer.length),
       },
     });
