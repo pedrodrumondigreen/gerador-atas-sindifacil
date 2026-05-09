@@ -1,9 +1,13 @@
 import Image from "next/image";
 import AtaForm from "@/components/AtaForm";
+import LogoutButton from "@/components/LogoutButton";
 
 export default function Home() {
   return (
     <main className="flex-1 py-10 px-4">
+      <div className="max-w-2xl mx-auto flex justify-end mb-2">
+        <LogoutButton />
+      </div>
       <div className="max-w-2xl mx-auto mb-8 text-center space-y-2">
         <div className="flex justify-center mb-4">
           <Image
