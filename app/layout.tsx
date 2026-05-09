@@ -2,6 +2,7 @@ import type { Metadata } from "next";
 import "./globals.css";
 
 export const metadata: Metadata = {
+  metadataBase: new URL("https://atas.condomineall.com"),
   title: "Gerador de Atas — SindiFácil",
   description: "Gere atas de assembleias automaticamente com IA",
   openGraph: {
