@@ -4,6 +4,12 @@ import "./globals.css";
 export const metadata: Metadata = {
   title: "Gerador de Atas — SindiFácil",
   description: "Gere atas de assembleias automaticamente com IA",
+  openGraph: {
+    title: "Gerador de Atas — SindiFácil",
+    description: "Gere atas de assembleias automaticamente com IA",
+    locale: "pt_BR",
+    type: "website",
+  },
 };
 
 export default function RootLayout({
