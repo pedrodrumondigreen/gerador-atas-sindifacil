@@ -32,6 +32,7 @@ services:
           memory: 4096M
       labels:
         - traefik.enable=true
+        - traefik.swarm.network=PedroDrumondNet
         - traefik.http.routers.gerador_atas.rule=Host(`atas.condomineall.com`)
         - traefik.http.routers.gerador_atas.entrypoints=websecure
         - traefik.http.routers.gerador_atas.priority=1
