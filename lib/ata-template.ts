@@ -128,12 +128,13 @@ export async function gerarAtaDocx(
 ): Promise<Buffer> {
   const tipoTitulo =
     assembleia.tipo === "AGO"
-      ? "ASSEMBLEIA GERAL ORDINÁRIA"
-      : "ASSEMBLEIA GERAL EXTRAORDINÁRIA";
+      ? "ATA DA ASSEMBLEIA GERAL ORDINÁRIA"
+      : "ATA DA ASSEMBLEIA GERAL EXTRAORDINÁRIA";
 
   const nomeCondominioTitulo = condominio.nomeEdificio.toUpperCase();
 
   const dataFormatada = formatarData(assembleia.data);
+  const cidadeFooter = condominio.cidade.split("/")[0].trim();
 
   const docChildren: Paragraph[] = [
     // Título linha 1
@@ -180,7 +181,7 @@ export async function gerarAtaDocx(
       spacing: { after: 480 },
       children: [
         new TextRun({
-          text: `Belo Horizonte, ${dataFormatada}.`,
+          text: `${cidadeFooter}, ${dataFormatada}.`,
           bold: true,
           font: "Times New Roman",
           size: 24,
@@ -234,12 +235,5 @@ function formatarData(dataISO: string): string {
     "janeiro", "fevereiro", "março", "abril", "maio", "junho",
     "julho", "agosto", "setembro", "outubro", "novembro", "dezembro",
   ];
-  const diasExtenso = [
-    "", "um", "dois", "três", "quatro", "cinco", "seis", "sete", "oito",
-    "nove", "dez", "onze", "doze", "treze", "quatorze", "quinze", "dezesseis",
-    "dezessete", "dezoito", "dezenove", "vinte", "vinte e um", "vinte e dois",
-    "vinte e três", "vinte e quatro", "vinte e cinco", "vinte e seis",
-    "vinte e sete", "vinte e oito", "vinte e nove", "trinta", "trinta e um",
-  ];
-  return `${diasExtenso[dia]} de ${meses[mes - 1]} de ${ano}`;
+  return `${dia} de ${meses[mes - 1]} de ${ano}`;
 }
