@@ -163,33 +163,14 @@ export async function gerarAtaDocx(
       ],
     }),
 
-    // Corpo principal
-    new Paragraph({
-      alignment: AlignmentType.JUSTIFIED,
-      spacing: { after: 240, line: 360 },
-      children: parseBoldText(conteudo.corpoPrincipal),
-    }),
-
-    emptyLine(),
-
-    // Encerramento
-    new Paragraph({
-      alignment: AlignmentType.JUSTIFIED,
-      spacing: { after: 240, line: 360 },
-      children: [
-        new TextRun({
-          text: "Encerramento: ",
-          bold: true,
-          font: "Times New Roman",
-          size: 24,
-        }),
-        new TextRun({
-          text: conteudo.encerramento,
-          font: "Times New Roman",
-          size: 24,
-        }),
-      ],
-    }),
+    // Corpo: cada parágrafo renderizado separadamente
+    ...conteudo.paragrafos.flatMap((paragrafo) => [
+      new Paragraph({
+        alignment: AlignmentType.JUSTIFIED,
+        spacing: { after: 240, line: 360 },
+        children: parseBoldText(paragrafo),
+      }),
+    ]),
 
     emptyLine(),
 
