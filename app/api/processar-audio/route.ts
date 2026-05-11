@@ -15,6 +15,24 @@ const execAsync = promisify(exec);
 export const runtime = "nodejs";
 export const maxDuration = 3600;
 
+const SEGMENT_SECONDS = 300; // 5 min
+const AUDIO_BITRATE = "128k";
+const WHISPER_CONCURRENCY = 3;
+const WHISPER_MAX_ATTEMPTS = 3;
+const WHISPER_RETRY_BASE_MS = 2000;
+const DURATION_DIVERGENCE_TOLERANCE_SEC = 30;
+
+interface SegmentResult {
+  name: string;
+  size: number;
+  duration: number;
+  text: string;
+  status: "ok" | "empty" | "error";
+  attempts: number;
+  durationMs: number;
+  error?: string;
+}
+
 export async function POST(request: NextRequest) {
   if (!(await isAuthenticated(request))) {
     return NextResponse.json({ error: "Não autenticado" }, { status: 401 });
@@ -23,7 +41,6 @@ export async function POST(request: NextRequest) {
   if (!contentType || !contentType.includes("multipart/form-data")) {
     return NextResponse.json({ error: "Content-Type inválido" }, { status: 400 });
   }
-
   if (!request.body) {
     return NextResponse.json({ error: "Requisição sem corpo" }, { status: 400 });
   }
@@ -39,92 +56,87 @@ export async function POST(request: NextRequest) {
     const inputStats = await stat(inputPath);
     const inputDuration = await getDurationSec(inputPath);
     log(
-      `[ata] input recebido: ${formatBytes(inputStats.size)}, duração ${formatHMS(inputDuration)}, arquivo ${inputPath.split("/").pop()}`,
+      `[ata] input recebido: ${formatBytes(inputStats.size)}, duração ${formatHMS(inputDuration)}`,
     );
 
-    const segPattern = join(tmpDir, "seg_%03d.mp3");
-    const segmentTime = 600;
-    log(`[ata] segmentando com ffmpeg (segments de ${segmentTime}s, 16kHz mono 96kbps)...`);
-    await execAsync(
-      `ffmpeg -hide_banner -loglevel error -i "${inputPath}" -vn -ac 1 -ar 16000 -ab 96k -f segment -segment_time ${segmentTime} -reset_timestamps 1 "${segPattern}"`,
-      { timeout: 1_800_000, maxBuffer: 50 * 1024 * 1024 },
-    );
+    if (inputDuration <= 0) {
+      throw new Error(
+        "Não foi possível ler a duração do arquivo. Verifique se é um áudio/vídeo válido.",
+      );
+    }
 
-    const allFiles = await readdir(tmpDir);
-    const segments = allFiles
-      .filter((f) => f.startsWith("seg_") && f.endsWith(".mp3"))
-      .sort();
+    await extractAndSegment(inputPath, tmpDir);
 
-    if (segments.length === 0) {
+    const segmentNames = await listSegments(tmpDir);
+    if (segmentNames.length === 0) {
       throw new Error("FFmpeg não gerou segmentos de áudio");
     }
 
-    const segInfos: Array<{ size: number; duration: number }> = [];
-    for (const seg of segments) {
-      const path = join(tmpDir, seg);
-      const s = await stat(path);
-      const d = await getDurationSec(path).catch(() => 0);
-      segInfos.push({ size: s.size, duration: d });
-    }
-    const totalSegDuration = segInfos.reduce((acc, s) => acc + s.duration, 0);
-    log(
-      `[ata] ffmpeg gerou ${segments.length} segmentos, duração total ${formatHMS(totalSegDuration)} (input era ${formatHMS(inputDuration)})`,
+    const segmentInfos = await Promise.all(
+      segmentNames.map(async (name) => {
+        const path = join(tmpDir, name);
+        const s = await stat(path);
+        const d = await getDurationSec(path).catch(() => 0);
+        return { name, size: s.size, duration: d };
+      }),
     );
-    if (Math.abs(totalSegDuration - inputDuration) > 30) {
-      log(
-        `[ata] ⚠ DIVERGÊNCIA: input ${formatHMS(inputDuration)} != soma dos segmentos ${formatHMS(totalSegDuration)} — ffmpeg pode ter cortado o áudio`,
+    const totalSegDuration = segmentInfos.reduce((acc, s) => acc + s.duration, 0);
+    log(
+      `[ata] ffmpeg gerou ${segmentNames.length} segmentos, duração total ${formatHMS(totalSegDuration)} (input era ${formatHMS(inputDuration)})`,
+    );
+
+    const divergence = Math.abs(totalSegDuration - inputDuration);
+    if (divergence > DURATION_DIVERGENCE_TOLERANCE_SEC) {
+      throw new Error(
+        `FFmpeg extraiu apenas ${formatHMS(totalSegDuration)} de um arquivo de ${formatHMS(inputDuration)}. ` +
+          `Diferença de ${formatHMS(divergence)} indica problema de codec no arquivo. ` +
+          `Tente exportar o vídeo em outro formato (MP4 H.264 + AAC) e enviar novamente.`,
       );
     }
 
-    const transcricoes: string[] = [];
-    let segmentosOk = 0;
-    let segmentosVazios = 0;
-    let segmentosErro = 0;
+    const results = await transcribeAllSegments(tmpDir, segmentInfos);
+    const fullText = results
+      .filter((r) => r.status === "ok")
+      .map((r) => r.text)
+      .join(" ")
+      .trim();
 
-    for (let i = 0; i < segments.length; i++) {
-      const seg = segments[i];
-      const info = segInfos[i];
-      const segPath = join(tmpDir, seg);
-      try {
-        const segBuffer = await readFile(segPath);
-        const tIni = Date.now();
-        const texto = await transcreverAudio(segBuffer, seg);
-        const dt = ((Date.now() - tIni) / 1000).toFixed(1);
-        const limpo = (texto || "").trim();
-
-        if (limpo.length === 0) {
-          log(
-            `[ata] seg ${seg}: ${formatBytes(info.size)}, ${formatHMS(info.duration)} → ⚠ VAZIO (whisper retornou 0 chars em ${dt}s)`,
-          );
-          segmentosVazios++;
-          continue;
-        }
-
-        log(
-          `[ata] seg ${seg}: ${formatBytes(info.size)}, ${formatHMS(info.duration)} → ${limpo.length} chars em ${dt}s`,
-        );
-        transcricoes.push(limpo);
-        segmentosOk++;
-      } catch (err) {
-        segmentosErro++;
-        const msg = err instanceof Error ? err.message : String(err);
-        log(`[ata] seg ${seg}: ❌ ERRO — ${msg}`);
-      }
-    }
-
-    const fullTranscript = transcricoes.join(" ");
+    const ok = results.filter((r) => r.status === "ok").length;
+    const empty = results.filter((r) => r.status === "empty").length;
+    const errored = results.filter((r) => r.status === "error").length;
     const dtTotal = ((Date.now() - t0) / 1000).toFixed(1);
     log(
-      `[ata] concluído em ${dtTotal}s: ${fullTranscript.length} chars totais | ok=${segmentosOk} vazios=${segmentosVazios} erros=${segmentosErro}`,
+      `[ata] concluído em ${dtTotal}s: ${fullText.length} chars | ok=${ok} vazios=${empty} erros=${errored}`,
     );
 
-    if (segmentosOk === 0) {
+    if (ok === 0) {
       throw new Error(
-        "Nenhum segmento foi transcrito com sucesso. Verifique se o arquivo tem áudio audível.",
+        "Nenhum segmento foi transcrito. Verifique se o arquivo tem áudio audível.",
       );
     }
 
-    return NextResponse.json({ transcricao: fullTranscript });
+    if (errored > 0) {
+      const erradosLista = results
+        .filter((r) => r.status === "error")
+        .map((r) => `${r.name} (${formatHMS(r.duration)})`)
+        .join(", ");
+      log(
+        `[ata] ⚠ ${errored} segmento(s) falharam após retries: ${erradosLista}`,
+      );
+    }
+
+    return NextResponse.json({
+      transcricao: fullText,
+      metadata: {
+        inputDuration,
+        segmentsTotal: results.length,
+        segmentsOk: ok,
+        segmentsEmpty: empty,
+        segmentsErrored: errored,
+        chars: fullText.length,
+        durationSec: parseFloat(dtTotal),
+      },
+    });
   } catch (error) {
     log(`[ata] ERRO FATAL: ${error instanceof Error ? error.message : String(error)}`);
     const msg = error instanceof Error ? error.message : "Erro desconhecido";
@@ -137,6 +149,130 @@ export async function POST(request: NextRequest) {
   }
 }
 
+async function extractAndSegment(inputPath: string, tmpDir: string): Promise<void> {
+  const segPattern = join(tmpDir, "seg_%03d.mp3");
+  log(
+    `[ata] segmentando com ffmpeg (segments de ${SEGMENT_SECONDS}s, 16kHz mono ${AUDIO_BITRATE}, loudnorm)...`,
+  );
+  await execAsync(
+    `ffmpeg -hide_banner -loglevel error ` +
+      `-fflags +genpts -err_detect ignore_err ` +
+      `-i "${inputPath}" ` +
+      `-vn -ac 1 -ar 16000 -ab ${AUDIO_BITRATE} ` +
+      `-af "loudnorm=I=-16:LRA=11:TP=-1.5" ` +
+      `-f segment -segment_time ${SEGMENT_SECONDS} -reset_timestamps 1 ` +
+      `"${segPattern}"`,
+    { timeout: 30 * 60 * 1000, maxBuffer: 100 * 1024 * 1024 },
+  );
+}
+
+async function listSegments(tmpDir: string): Promise<string[]> {
+  const allFiles = await readdir(tmpDir);
+  return allFiles
+    .filter((f) => f.startsWith("seg_") && f.endsWith(".mp3"))
+    .sort();
+}
+
+async function transcribeAllSegments(
+  tmpDir: string,
+  segmentInfos: Array<{ name: string; size: number; duration: number }>,
+): Promise<SegmentResult[]> {
+  const results: SegmentResult[] = new Array(segmentInfos.length);
+  let nextIndex = 0;
+
+  async function worker() {
+    while (true) {
+      const i = nextIndex++;
+      if (i >= segmentInfos.length) return;
+      const info = segmentInfos[i];
+      results[i] = await transcribeOneSegment(tmpDir, info);
+    }
+  }
+
+  const workers = Array.from({ length: WHISPER_CONCURRENCY }, () => worker());
+  await Promise.all(workers);
+  return results;
+}
+
+async function transcribeOneSegment(
+  tmpDir: string,
+  info: { name: string; size: number; duration: number },
+): Promise<SegmentResult> {
+  const segPath = join(tmpDir, info.name);
+  const segBuffer = await readFile(segPath);
+  const tIni = Date.now();
+
+  for (let attempt = 1; attempt <= WHISPER_MAX_ATTEMPTS; attempt++) {
+    try {
+      const texto = (await transcreverAudio(segBuffer, info.name)) || "";
+      const limpo = texto.trim();
+      const dtMs = Date.now() - tIni;
+
+      if (limpo.length === 0) {
+        log(
+          `[ata] seg ${info.name}: ${formatBytes(info.size)}, ${formatHMS(info.duration)} → ⚠ VAZIO (tentativa ${attempt}/${WHISPER_MAX_ATTEMPTS}, ${(dtMs / 1000).toFixed(1)}s)`,
+        );
+        return {
+          name: info.name,
+          size: info.size,
+          duration: info.duration,
+          text: "",
+          status: "empty",
+          attempts: attempt,
+          durationMs: dtMs,
+        };
+      }
+
+      log(
+        `[ata] seg ${info.name}: ${formatBytes(info.size)}, ${formatHMS(info.duration)} → ${limpo.length} chars (tentativa ${attempt}/${WHISPER_MAX_ATTEMPTS}, ${(dtMs / 1000).toFixed(1)}s)`,
+      );
+      return {
+        name: info.name,
+        size: info.size,
+        duration: info.duration,
+        text: limpo,
+        status: "ok",
+        attempts: attempt,
+        durationMs: dtMs,
+      };
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      if (attempt < WHISPER_MAX_ATTEMPTS) {
+        const delay = WHISPER_RETRY_BASE_MS * 2 ** (attempt - 1);
+        log(
+          `[ata] seg ${info.name}: tentativa ${attempt} falhou (${msg}). Re-tentando em ${delay}ms...`,
+        );
+        await sleep(delay);
+        continue;
+      }
+      log(
+        `[ata] seg ${info.name}: ❌ ERRO após ${WHISPER_MAX_ATTEMPTS} tentativas — ${msg}`,
+      );
+      return {
+        name: info.name,
+        size: info.size,
+        duration: info.duration,
+        text: "",
+        status: "error",
+        attempts: WHISPER_MAX_ATTEMPTS,
+        durationMs: Date.now() - tIni,
+        error: msg,
+      };
+    }
+  }
+  // unreachable
+  return {
+    name: info.name,
+    size: info.size,
+    duration: info.duration,
+    text: "",
+    status: "error",
+    attempts: WHISPER_MAX_ATTEMPTS,
+    durationMs: Date.now() - tIni,
+    error: "unreachable",
+  };
+}
+
 function receiveFileToDisk(
   body: ReadableStream<Uint8Array>,
   contentType: string,
@@ -144,7 +280,6 @@ function receiveFileToDisk(
 ): Promise<string> {
   return new Promise((resolve, reject) => {
     const bb = Busboy({ headers: { "content-type": contentType } });
-
     let inputPath: string | null = null;
     let pendingWrite: Promise<void> | null = null;
     let fileHandled = false;
@@ -155,24 +290,19 @@ function receiveFileToDisk(
         return;
       }
       fileHandled = true;
-
       const rawName = info.filename || "input.mp4";
       const ext = (rawName.split(".").pop() ?? "mp4").toLowerCase();
       inputPath = join(tmpDir, `input.${ext}`);
-
       const writeStream = createWriteStream(inputPath);
-
       pendingWrite = new Promise<void>((res, rej) => {
         writeStream.on("finish", () => res());
         writeStream.on("error", rej);
         fileStream.on("error", rej);
       });
-
       fileStream.pipe(writeStream);
     });
 
     bb.on("error", reject);
-
     bb.on("close", async () => {
       if (!inputPath || !pendingWrite) {
         reject(new Error("Arquivo não encontrado no upload"));
@@ -201,6 +331,10 @@ async function getDurationSec(filePath: string): Promise<number> {
   return parseFloat(stdout.trim()) || 0;
 }
 
+function sleep(ms: number): Promise<void> {
+  return new Promise((res) => setTimeout(res, ms));
+}
+
 function formatBytes(b: number): string {
   if (b < 1024) return `${b}B`;
   if (b < 1024 * 1024) return `${(b / 1024).toFixed(1)}KB`;
@@ -219,7 +353,6 @@ function formatHMS(seconds: number): string {
 }
 
 function log(msg: string) {
-  // Console-only diagnostics — visible via `docker service logs sindifacil_gerador_atas`
   // eslint-disable-next-line no-console
   console.log(msg);
 }

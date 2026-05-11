@@ -1,12 +1,24 @@
 import OpenAI from "openai";
 
 function getClient() {
-  return new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
+  return new OpenAI({
+    apiKey: process.env.OPENAI_API_KEY,
+    timeout: 10 * 60 * 1000,
+  });
 }
+
+const WHISPER_PROMPT_PT_BR =
+  "Transcrição em português brasileiro de uma assembleia geral de condomínio. " +
+  "Termos comuns: assembleia ordinária, assembleia extraordinária, condômino, " +
+  "síndico, síndica, ata, edital de convocação, pauta, ordem do dia, " +
+  "deliberação, aprovação, votação, quórum, unanimidade, advogada, OAB, " +
+  "convenção condominial, regimento interno, fundo de reserva, taxa condominial, " +
+  "boleto, inadimplência, individualização, hidrômetro, fachada, garagem, " +
+  "área comum, AGE, AGO, Sindifácil.";
 
 export async function transcreverAudio(
   audioBuffer: Buffer,
-  filename: string
+  filename: string,
 ): Promise<string> {
   const file = new File([new Uint8Array(audioBuffer)], filename, {
     type: getMimeType(filename),
@@ -17,7 +29,9 @@ export async function transcreverAudio(
     file,
     model: "whisper-1",
     language: "pt",
+    prompt: WHISPER_PROMPT_PT_BR,
     response_format: "text",
+    temperature: 0,
   });
 
   return response as unknown as string;
