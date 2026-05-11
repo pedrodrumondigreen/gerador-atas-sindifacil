@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { transcreverAudio } from "@/lib/transcricao";
+import { isAuthenticated } from "@/lib/auth";
 
 export const maxDuration = 60;
 
@@ -8,6 +9,9 @@ export const maxDuration = 60;
 
 
 export async function POST(request: NextRequest) {
+  if (!(await isAuthenticated(request))) {
+    return NextResponse.json({ error: "Não autenticado" }, { status: 401 });
+  }
   try {
     const formData = await request.formData();
     const file = formData.get("audio") as File | null;

@@ -8,6 +8,7 @@ import { promisify } from "util";
 import { Readable } from "node:stream";
 import Busboy from "busboy";
 import { transcreverAudio } from "@/lib/transcricao";
+import { isAuthenticated } from "@/lib/auth";
 
 const execAsync = promisify(exec);
 
@@ -15,6 +16,9 @@ export const runtime = "nodejs";
 export const maxDuration = 3600;
 
 export async function POST(request: NextRequest) {
+  if (!(await isAuthenticated(request))) {
+    return NextResponse.json({ error: "Não autenticado" }, { status: 401 });
+  }
   const contentType = request.headers.get("content-type");
   if (!contentType || !contentType.includes("multipart/form-data")) {
     return NextResponse.json({ error: "Content-Type inválido" }, { status: 400 });
